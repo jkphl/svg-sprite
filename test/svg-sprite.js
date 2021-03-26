@@ -15,18 +15,16 @@
 
 var fs = require('fs');
 var util = require('util');
-var svg2png = require('svg2png');
+var sharp = require('sharp');
 var should = require('should'),
     path = require('path'),
     rimraf = require('rimraf'),
     glob = require('glob'),
     File = require('vinyl'),
     _ = require('lodash'),
-    imageDiff = require('image-diff'),
+    looksSame = require('looks-same'),
     mustache = require('mustache'),
-    execFile = require('child_process').execFile,
-    phantomjs = require('phantomjs-prebuilt').path,
-    capturePhantomScript = path.resolve(__dirname, 'script/capture.phantom.js'),
+    puppeteer = require('puppeteer'),
     sass = require('node-sass'),
     less = require('less'),
     stylus = require('stylus'),
@@ -39,7 +37,6 @@ var cwdWeather = path.join(__dirname, 'fixture', 'svg', 'single'),
 // This is so that we can fix tests on Node.js > 10 since the Array.sort algorithm changed
 var isNodeGreaterThan10 = process.version.split('.')[0].slice(1) > 10;
 var readFileP = util.promisify(fs.readFile);
-var writeFileP = util.promisify(fs.writeFile);
 
 /**
  * Add a bunch of SVG files
@@ -98,24 +95,55 @@ function writeFile(file, content) {
 }
 
 /**
- * Capture a screenshot of a URL using PhantomJS (synchronous)
+ * Capture a screenshot of a URL using Pupeteer
  *
  * @param {String} src                Source file
- * @param {String} target            Screenshot file
- * @param {Function} cb                Function
+ * @param {String} target             Screenshot file
+ * @param {Function} cb               Callback
  */
-function capturePhantom(src, target, cb) {
-    execFile(phantomjs, [capturePhantomScript, src, target], function (err, stdout, stderr) {
-        if (err) {
-            cb(err);
-        } else if (stdout.length > 0) {
-            cb((stdout.toString().trim() === 'success') ? null : new Error('PhantomJS couldn\'t capture "' + src + '"'));
-        } else if (stderr.length > 0) {
-            cb(new Error(stderr.toString().trim()));
-        } else {
-            cb(new Error('PhantomJS couldn\'t capture "' + src + '"'));
-        }
-    });
+function capturePuppeteer(src, target, cb) {
+    var _browser;
+    var _page;
+    try {
+        puppeteer
+            .launch()
+            .then(function(browser) {
+                _browser = browser;
+                return _browser;
+            })
+            .then(function(browser) {
+                _page = browser.newPage();
+                return _page;
+            })
+            .then(function(page) {
+                page.setViewport({
+                    width: 1280,
+                    height: 1024
+                });
+                return page;
+            })
+            .then(function(page) {
+                return page.goto('file://' + src);
+            })
+            .then(function() {
+                return _page;
+            })
+            .then(function(page) {
+                return page.screenshot({ 
+                    path: target,
+                    quality: undefined
+                });
+            })
+            .then(function() {
+                return _browser.close();
+            })
+            .then(function() {
+                cb();
+            });
+    } catch(err) {
+        console.error(err);
+        cb(new Error(err));
+    }
 }
 
 /**
@@ -136,21 +164,29 @@ function compareSvg2Png(svg, png, expected, diff, done, msg) {
         done();
     };
     readFileP(svg)
-        .then(svg2png)
-        .then(function (buffer) {
-            writeFileP(png, buffer)
-                .then(function () {
-                    imageDiff({
-                        actualImage: png,
-                        expectedImage: expected,
-                        diffImage: diff
-                    }, function (err, imagesAreSame) {
-                        should(err).not.ok;
-                        should.ok(imagesAreSame, msg);
-                        done();
-                    });
-                })
-                .catch(ecb);
+        .then(function(buffer) {
+            sharp(buffer).toFile(png, function(err) {
+                if (err) {
+                    ecb(err);
+                }
+                looksSame(png, expected, function(err, result) {
+                    should(err).not.ok;
+                    should.ok(result.equal, msg + JSON.stringify(result.diffClusters) + png);
+                    done();
+                });
+                looksSame.createDiff({
+                    reference: expected,
+                    current: png,
+                    diff: diff,
+                    highlightColor: '#ff00ff', // color to highlight the differences
+                    // strict: false, // strict comparsion
+                    // tolerance: 2.5,
+                    // antialiasingTolerance: 0,
+                    // ignoreAntialiasing: true, // ignore antialising by default
+                    // ignoreCaret: true // ignore caret by default
+                }, function() {
+                });
+            });
         })
         .catch(ecb);
 }
@@ -364,15 +400,12 @@ describe('svg-sprite', function () {
                         previewImage = path.join(__dirname, '..', 'tmp', 'css', 'png', 'css.html.png');
                     preview.should.be.ok;
 
-                    capturePhantom(preview, previewImage, function (error) {
+                    capturePuppeteer(preview, previewImage, function (error) {
                         should(error).not.ok;
-                        imageDiff({
-                            actualImage: previewImage,
-                            expectedImage: path.join(__dirname, 'expected', 'png', 'css.html.png'),
-                            diffImage: path.join(__dirname, '..', 'tmp', 'css', 'png', 'css.html.diff.png')
-                        }, function (error, imagesAreSame) {
+                        looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.html.png'),
+                        function(error, result) {
                             should(error).not.ok;
-                            should.ok(imagesAreSame, 'The generated CSS preview doesn\'t match the expected one!');
+                            should.ok(result.equal, 'The generated CSS preview doesn\'t match the expected one!');
                             done();
                         });
                     });
@@ -395,15 +428,12 @@ describe('svg-sprite', function () {
                                 previewImage = path.join(__dirname, '..', 'tmp', 'css', 'png', 'scss.html.png');
                             preview.should.be.ok;
 
-                            capturePhantom(preview, previewImage, function (error) {
+                            capturePuppeteer(preview, previewImage, function (error) {
                                 should(error).not.ok;
-                                imageDiff({
-                                    actualImage: previewImage,
-                                    expectedImage: path.join(__dirname, 'expected', 'png', 'css.html.png'),
-                                    diffImage: path.join(__dirname, '..', 'tmp', 'css', 'png', 'scss.html.diff.png')
-                                }, function (error, imagesAreSame) {
+                                looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.html.png'),
+                                function(error, result) {
                                     should(error).not.ok;
-                                    should.ok(imagesAreSame, 'The generated Sass preview doesn\'t match the expected one!');
+                                    should.ok(result.equal, 'The generated Sass preview doesn\'t match the expected one!');
                                     done();
                                 });
                             });
@@ -429,15 +459,12 @@ describe('svg-sprite', function () {
                                 previewImage = path.join(__dirname, '..', 'tmp', 'css', 'png', 'less.html.png');
                             preview.should.be.ok;
 
-                            capturePhantom(preview, previewImage, function (error) {
+                            capturePuppeteer(preview, previewImage, function (error) {
                                 should(error).not.ok;
-                                imageDiff({
-                                    actualImage: previewImage,
-                                    expectedImage: path.join(__dirname, 'expected', 'png', 'css.html.png'),
-                                    diffImage: path.join(__dirname, '..', 'tmp', 'css', 'png', 'less.html.diff.png')
-                                }, function (error, imagesAreSame) {
+                                looksSame( previewImage, path.join(__dirname, 'expected', 'png', 'css.html.png'),
+                                function(error, result) {
                                     should(error).not.ok;
-                                    should.ok(imagesAreSame, 'The generated LESS preview doesn\'t match the expected one!');
+                                    should.ok(result.equal, 'The generated LESS preview doesn\'t match the expected one!');
                                     done();
                                 });
                             });
@@ -463,15 +490,12 @@ describe('svg-sprite', function () {
                                 previewImage = path.join(__dirname, '..', 'tmp', 'css', 'png', 'styl.html.png');
                             preview.should.be.ok;
 
-                            capturePhantom(preview, previewImage, function (error) {
+                            capturePuppeteer(preview, previewImage, function (error) {
                                 should(error).not.ok;
-                                imageDiff({
-                                    actualImage: previewImage,
-                                    expectedImage: path.join(__dirname, 'expected', 'png', 'css.html.png'),
-                                    diffImage: path.join(__dirname, '..', 'tmp', 'css', 'png', 'styl.html.diff.png')
-                                }, function (error, imagesAreSame) {
+                                looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.html.png'),
+                                function(error, result) {
                                     should(error).not.ok;
-                                    should.ok(imagesAreSame, 'The generated Stylus preview doesn\'t match the expected one!');
+                                    should.ok(result.equal, 'The generated Stylus preview doesn\'t match the expected one!');
                                     done();
                                 });
                             });
@@ -592,7 +616,7 @@ describe('svg-sprite', function () {
                 });
             });
 
-            it('creates visually correct sprite', function (done) {
+            it('creates visually correct sprite (vertical.centered)', function (done) {
                 this.timeout(20000);
                 compareSvg2Png(
                     path.join(__dirname, '..', 'tmp', 'css', 'svg', svg.vertical),
@@ -613,15 +637,12 @@ describe('svg-sprite', function () {
                     previewImage = path.join(__dirname, '..', 'tmp', 'css', 'png', 'css.vertical.centered.html.png');
                 preview.should.be.ok;
 
-                capturePhantom(preview, previewImage, function (error) {
+                capturePuppeteer(preview, previewImage, function (error) {
                     should(error).not.ok;
-                    imageDiff({
-                        actualImage: previewImage,
-                        expectedImage: path.join(__dirname, 'expected', 'png', 'css.vertical.centered.html.png'),
-                        diffImage: path.join(__dirname, '..', 'tmp', 'css', 'png', 'css.centered.html.diff.png')
-                    }, function (error, imagesAreSame) {
+                    looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.vertical.centered.html.png'),
+                    function(error, result) {
                         should(error).not.ok;
-                        should.ok(imagesAreSame, 'The generated CSS preview doesn\'t match the expected one!');
+                        should.ok(result.equal, 'The generated CSS preview doesn\'t match the expected one!');
                         done();
                     });
                 });
@@ -664,7 +685,7 @@ describe('svg-sprite', function () {
                 });
             });
 
-            it('creates visually correct sprite', function (done) {
+            it('creates visually correct sprite (horizontal.centered)', function (done) {
                 this.timeout(20000);
                 compareSvg2Png(
                     path.join(__dirname, '..', 'tmp', 'css', 'svg', svg.horizontal),
@@ -692,15 +713,12 @@ describe('svg-sprite', function () {
                             previewImage = path.join(__dirname, '..', 'tmp', 'css', 'png', 'scss.horizontal.centered.html.png');
                         preview.should.be.ok;
 
-                        capturePhantom(preview, previewImage, function (error) {
+                        capturePuppeteer(preview, previewImage, function (error) {
                             should(error).not.ok;
-                            imageDiff({
-                                actualImage: previewImage,
-                                expectedImage: path.join(__dirname, 'expected', 'png', 'css.horizontal.centered.html.png'),
-                                diffImage: path.join(__dirname, '..', 'tmp', 'css', 'png', 'scss.horizontal.centered.html.diff.png')
-                            }, function (error, imagesAreSame) {
+                            looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.horizontal.centered.html.png'),
+                            function(error, result) {
                                 should(error).not.ok;
-                                should.ok(imagesAreSame, 'The generated Sass preview doesn\'t match the expected one!');
+                                should.ok(result.equal, 'The generated Sass preview doesn\'t match the expected one!');
                                 done();
                             });
                         });
@@ -745,7 +763,7 @@ describe('svg-sprite', function () {
                 });
             });
 
-            it('creates visually correct sprite', function (done) {
+            it('creates visually correct sprite (packed.centered)', function (done) {
                 this.timeout(20000);
                 compareSvg2Png(
                     path.join(__dirname, '..', 'tmp', 'css', 'svg', svg.packed),
@@ -774,15 +792,12 @@ describe('svg-sprite', function () {
                             previewImage = path.join(__dirname, '..', 'tmp', 'css', 'png', 'less.packed.centered.html.png');
                         preview.should.be.ok;
 
-                        capturePhantom(preview, previewImage, function (error) {
+                        capturePuppeteer(preview, previewImage, function (error) {
                             should(error).not.ok;
-                            imageDiff({
-                                actualImage: previewImage,
-                                expectedImage: path.join(__dirname, 'expected', 'png', 'css.packed.aligned.html.png'),
-                                diffImage: path.join(__dirname, '..', 'tmp', 'css', 'png', 'less.packed.centered.html.diff.png')
-                            }, function (error, imagesAreSame) {
+                            looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.packed.centered.html.png'),
+                            function(error, result) {
                                 should(error).not.ok;
-                                should.ok(imagesAreSame, 'The generated LESS preview doesn\'t match the expected one!');
+                                should.ok(result.equal, 'The generated LESS preview doesn\'t match the expected one!');
                                 done();
                             });
                         });
@@ -833,7 +848,7 @@ describe('svg-sprite', function () {
                 });
             });
 
-            it('creates visually correct sprite', function (done) {
+            it('creates visually correct sprite (vertical.mixed)', function (done) {
                 this.timeout(20000);
                 compareSvg2Png(
                     path.join(__dirname, '..', 'tmp', 'view', 'svg', svg.vertical),
@@ -854,15 +869,12 @@ describe('svg-sprite', function () {
                     previewImage = path.join(__dirname, '..', 'tmp', 'view', 'png', 'css.vertical.mixed.html.png');
                 preview.should.be.ok;
 
-                capturePhantom(preview, previewImage, function (error) {
+                capturePuppeteer(preview, previewImage, function (error) {
                     should(error).not.ok;
-                    imageDiff({
-                        actualImage: previewImage,
-                        expectedImage: path.join(__dirname, 'expected', 'png', 'css.vertical.mixed.html.png'),
-                        diffImage: path.join(__dirname, '..', 'tmp', 'view', 'png', 'css.mixed.html.diff.png')
-                    }, function (error, imagesAreSame) {
+                    looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.vertical.mixed.html.png'),
+                    function(error, result) {
                         should(error).not.ok;
-                        should.ok(imagesAreSame, 'The generated CSS preview doesn\'t match the expected one!');
+                        should.ok(result.equal, 'The generated CSS preview doesn\'t match the expected one!');
                         done();
                     });
                 });
@@ -909,7 +921,7 @@ describe('svg-sprite', function () {
                 });
             });
 
-            it('creates visually correct sprite', function (done) {
+            it('creates visually correct sprite (horizontal.mixed)', function (done) {
                 this.timeout(20000);
                 compareSvg2Png(
                     path.join(__dirname, '..', 'tmp', 'view', 'svg', svg.horizontal),
@@ -937,15 +949,12 @@ describe('svg-sprite', function () {
                             previewImage = path.join(__dirname, '..', 'tmp', 'view', 'png', 'scss.horizontal.mixed.html.png');
                         preview.should.be.ok;
 
-                        capturePhantom(preview, previewImage, function (error) {
+                        capturePuppeteer(preview, previewImage, function (error) {
                             should(error).not.ok;
-                            imageDiff({
-                                actualImage: previewImage,
-                                expectedImage: path.join(__dirname, 'expected', 'png', 'css.horizontal.mixed.html.png'),
-                                diffImage: path.join(__dirname, '..', 'tmp', 'view', 'png', 'scss.horizontal.mixed.html.diff.png')
-                            }, function (error, imagesAreSame) {
+                            looksSame(previewImage, path.join(__dirname, 'expected', 'png', 'css.horizontal.mixed.html.png'),
+                            function(error, result) {
                                 should(error).not.ok;
-                                should.ok(imagesAreSame, 'The generated Sass preview doesn\'t match the expected one!');
+                                should.ok(result.equal, 'The generated Sass preview doesn\'t match the expected one!');
                                 done();
                             });
                         });
@@ -990,7 +999,7 @@ describe('svg-sprite', function () {
                 });
             });
 
-            it('creates visually correct sprite', function (done) {
+            it('creates visually correct sprite (packed.mixed)', function (done) {
                 this.timeout(20000);
                 compareSvg2Png(
                     path.join(__dirname, '..', 'tmp', 'view', 'svg', svg.packed),
@@ -1019,15 +1028,12 @@ describe('svg-sprite', function () {
                             previewImage = path.join(__dirname, '..', 'tmp', 'view', 'png', 'less.packed.mixed.html.png');
                         preview.should.be.ok;
 
-                        capturePhantom(preview, previewImage, function (error) {
+                        capturePuppeteer(preview, previewImage, function (error) {
                             should(error).not.ok;
-                            imageDiff({
-                                actualImage: previewImage,
-                                expectedImage: path.join(__dirname, 'expected', 'png', 'css.packed.aligned.html.png'),
-                                diffImage: path.join(__dirname, '..', 'tmp', 'view', 'png', 'less.packed.mixed.html.diff.png')
-                            }, function (error, imagesAreSame) {
+                            looksSame(previewImage,path.join(__dirname, 'expected', 'png', 'css.packed.aligned.html.png'),
+                            function(error, result) {
                                 should(error).not.ok;
-                                should.ok(imagesAreSame, 'The generated LESS preview doesn\'t match the expected one!');
+                                should.ok(result.equal, 'The generated LESS preview doesn\'t match the expected one!');
                                 done();
                             });
                         });
