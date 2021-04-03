@@ -14,8 +14,6 @@
 /* jshint -W030 */
 
 var fs = require('fs');
-var util = require('util');
-var svg2png = require('svg2png');
 var should = require('should'),
     path = require('path'),
     rimraf = require('rimraf'),
@@ -24,13 +22,14 @@ var should = require('should'),
     _ = require('lodash'),
     looksSame = require('looks-same'),
     mustache = require('mustache'),
-    execFile = require('child_process').execFile,
-    phantomjs = require('phantomjs-prebuilt').path,
-    capturePhantomScript = path.resolve(__dirname, 'script/capture.phantom.js'),
     sass = require('node-sass'),
     less = require('less'),
     stylus = require('stylus'),
+    convertSvg2Png = require('./helpers/convert-svg-2-png'),
     SVGSpriter = require('../lib/svg-sprite');
+
+const BrowserManager = require('../lib/browser-mananger');
+const browserManager = new BrowserManager();
 
 var cwdWeather = path.join(__dirname, 'fixture', 'svg', 'single'),
     cwdAlign = path.join(__dirname, 'fixture', 'svg', 'css'),
@@ -38,8 +37,6 @@ var cwdWeather = path.join(__dirname, 'fixture', 'svg', 'single'),
 
 // This is so that we can fix tests on Node.js > 10 since the Array.sort algorithm changed
 var isNodeGreaterThan10 = process.version.split('.')[0].slice(1) > 10;
-var readFileP = util.promisify(fs.readFile);
-var writeFileP = util.promisify(fs.writeFile);
 
 /**
  * Add a bunch of SVG files
@@ -104,18 +101,30 @@ function writeFile(file, content) {
  * @param {String} target            Screenshot file
  * @param {Function} cb                Function
  */
-function capturePhantom(src, target, cb) {
-    execFile(phantomjs, [capturePhantomScript, src, target], function (err, stdout, stderr) {
-        if (err) {
-            cb(err);
-        } else if (stdout.length > 0) {
-            cb((stdout.toString().trim() === 'success') ? null : new Error('PhantomJS couldn\'t capture "' + src + '"'));
-        } else if (stderr.length > 0) {
-            cb(new Error(stderr.toString().trim()));
-        } else {
-            cb(new Error('PhantomJS couldn\'t capture "' + src + '"'));
+async function capturePhantom(src, target, cb) {
+    let page;
+
+    try {
+        const browser = await  browserManager.getBrowser();
+        page = await browser.newPage();
+        await page.setViewport({
+            height: 1024,
+            width: 1280
+        });
+        await page.goto(`file://${src}`);
+        await page.screenshot({
+            omitBackground: true,
+            path: target,
+            type: 'png'
+        });
+        cb();
+    } catch (error) {
+       cb(error);
+    } finally {
+        if (page) {
+            await page.close();
         }
-    });
+    }
 }
 
 /**
@@ -135,25 +144,22 @@ function compareSvg2Png(svg, png, expected, diff, done, msg) {
         should(err).not.ok;
         done();
     };
-    readFileP(svg)
-        .then(svg2png)
-        .then(function (buffer) {
-            writeFileP(png, buffer)
-                .then(function () {
-                    looksSame(png, expected, function(err, result) {
-                        should(err).not.ok;
-                        should.ok(result.equal, msg + JSON.stringify(result.diffClusters) + png);
-                        done();
-                    });
-                    looksSame.createDiff({
-                        reference: expected,
-                        current: png,
-                        diff: diff,
-                        highlightColor: '#ff00ff'
-                    }, function() {
-                    });
-                })
-                .catch(ecb);
+    browserManager
+        .getBrowser()
+        .then(browser => convertSvg2Png(svg, png, browser))
+        .then(() => {
+            looksSame(png, expected, function(err, result) {
+                should(err).not.ok;
+                should.ok(result.equal, msg + JSON.stringify(result.diffClusters) + png);
+                done();
+            });
+            looksSame.createDiff({
+                reference: expected,
+                current: png,
+                diff: diff,
+                highlightColor: '#ff00ff'
+            }, function() {
+            });
         })
         .catch(ecb);
 }
@@ -165,6 +171,8 @@ before(function (done) {
 });
 
 describe('svg-sprite', function () {
+    after(() => browserManager.closeBrowser());
+
     var weather = glob.sync('**/weather*.svg', { cwd: cwdWeather }),
         align = glob.sync('**/*.svg', { cwd: cwdAlign }),
         previewTemplate = fs.readFileSync(path.join(__dirname, 'tmpl', 'css.html'), 'utf-8');
