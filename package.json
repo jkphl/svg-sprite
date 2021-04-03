@@ -27,7 +27,7 @@
   ],
   "scripts": {
     "lint": "jshint bin lib test",
-    "mocha": "_mocha --reporter spec test/svg-sprite.js",
+    "mocha": "_mocha --reporter spec test/**/*.test.js test/svg-sprite.js",
     "coverage": "c8 npm run mocha",
     "test": "npm run mocha"
   },
@@ -40,8 +40,8 @@
     "js-yaml": "^4.0.0",
     "lodash": "^4.17.21",
     "mustache": "^4.2.0",
-    "phantomjs-prebuilt": "^2.1.16",
     "prettysize": "^2.0.0",
+    "puppeteer": "^8.0.0",
     "svgo": "^2.3.0",
     "vinyl": "^2.2.1",
     "winston": "^3.3.3",
@@ -58,8 +58,7 @@
     "node-sass": "^5.0.0",
     "rimraf": "^3.0.2",
     "should": "^13.2.3",
-    "stylus": "^0.54.8",
-    "svg2png": "^4.1.1"
+    "stylus": "^0.54.8"
   },
   "keywords": [
     "icon",
