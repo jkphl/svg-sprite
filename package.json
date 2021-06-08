@@ -67,7 +67,7 @@
     "rimraf": "",
     "should": "",
     "stylus": "^0.54.8",
-    "svg2png": "github:jkphl/svg2png"
+    "svg2png": "^4.1.1"
   },
   "keywords": [
     "icon",
