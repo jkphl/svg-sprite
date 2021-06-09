@@ -944,4 +944,32 @@ describe('svg-sprite', () => {
             });
         });
     });
+
+    describe('with styled svg files', function() {
+        var spriter = new SVGSpriter({
+            shape: {
+                dest: 'svg'
+            }
+        });
+
+        describe('with zebra file', function () {
+            var cwdStyled = path.join(__dirname, 'fixture/svg/styled');
+            var zebra = 'zebra.svg';
+
+            it('returns optimized shape', function (done) {
+                this.timeout(20000);
+
+                addFixtureFiles(spriter, [zebra], cwdStyled);
+                spriter.compile(function (error, result, data) {
+                    should(error).not.ok;
+                    should(result).be.an.Object;
+                    should(result).have.property('shapes');
+                    should(result.shapes).be.an.Array;
+                    should(data).be.an.Object;
+                    should(data).be.empty;
+                    done();
+                });
+            });
+        });
+    });
 });
